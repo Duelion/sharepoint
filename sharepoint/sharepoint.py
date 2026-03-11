@@ -1,10 +1,9 @@
 from typing import Optional, Any, Type, TypeVar
 
 import requests
-from pydantic.v1 import BaseModel
-from pydantic.v1 import root_validator, Field
+from pydantic import BaseModel, model_validator, Field, ConfigDict
 
-from . import sp_fields
+
 from .models import TokenData
 from .session import SharepointSession
 from .utils import replace_string_map, replace_key_mapping, to_camel, COLUMN_ESCAPE, AUTO_LIST_FIELDS, \
@@ -40,6 +39,7 @@ class SharePoint:
         token_data = self._access_token
         if token_data is None or token_data.is_expired():
             token_data = self.get_auth_token()
+            self._access_token = token_data
         return token_data
 
     @property
@@ -117,27 +117,6 @@ class SharePoint:
         return list_
 
 
-    def create_list_from_xml(self, name, xml, description=None, document_library=False, title_field_not_required=True):
-        url = self.api + "/lists"
-        base_template = 101 if document_library else 100  # Lista normal o con archivos adjuntos
-        payload = {
-            "__metadata": {
-                "type": "SP.List"
-            },
-            "AllowContentTypes": True,
-            "BaseTemplate": base_template,
-            "ContentTypesEnabled": True,
-            "Title": name
-        }
-        if description is not None:
-            payload["Description"] = description
-        response = self.session.post(url, json=payload)
-        data = response.json()["d"]
-        list_ = List(**data, sharepoint=self)
-        if title_field_not_required:
-            title_field = list_.get_field_by_static_name("Title")
-            title_field.update({"Required": False})
-        return list_
 
 
 GenericModel = TypeVar('GenericModel', bound=BaseModel)
@@ -149,11 +128,13 @@ class BaseSharePointModel(BaseModel):
     type: str
     sharepoint: SharePoint = Field(..., repr=False)
 
-    class Config:
-        alias_generator = to_camel
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        arbitrary_types_allowed=True,
+    )
 
-    @root_validator(pre=True)
+    @model_validator(mode='before')
+    @classmethod
     def construct_values(cls, values: dict):
         result = {}
         values["Sharepoint"] = values.pop("sharepoint")
@@ -253,7 +234,8 @@ class Item(BaseSharePointModel):
     id: int
     properties: dict[str, Any] = Field(..., alias="__UserCreatedProperties")
 
-    @root_validator(pre=True)
+    @model_validator(mode='before')
+    @classmethod
     def properties_user_created(cls, values: dict):
         result = {}
         for key, value in values.items():

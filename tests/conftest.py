@@ -3,7 +3,8 @@ import pathlib
 from enum import Enum
 
 import pytest
-from pydantic.v1 import BaseSettings, BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, Field
 
 from sharepoint import SharePoint, SharepointSession, sp_fields
 
@@ -20,11 +21,10 @@ def settings():
         secret: str
         domain: str
         site: str
-        delay_secs: int = 0.1
+        delay_secs: float = 0.1
         num_retries: int = 5
 
-        class Config:
-            env_prefix = "TEST_"
+        model_config = SettingsConfigDict(env_prefix="TEST_", env_file=".env")
 
     return PyTestSettings()
 
@@ -67,7 +67,7 @@ def pydantic_model():
     class County(BaseModel):
         name: str  = Field(...)
         population: int
-        color: Color = Field(..., sp_field=sp_fields.FieldChoices, choices=[item.value for item in Color])
+        color: Color = Field(..., json_schema_extra={"sp_field": sp_fields.FieldChoices, "choices": [item.value for item in Color]})
 
     class Info(BaseModel):
         governor: str

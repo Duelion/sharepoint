@@ -1,24 +1,23 @@
 import datetime
+from collections import deque
+from collections.abc import Sequence
 from enum import Enum
 from queue import Queue
-from typing import Type, Any
+from typing import Type, Any, get_origin, get_args
 
-from pydantic import BaseModel, Field
-from pydantic.v1.fields import ModelField
-from pydantic.v1.fields import SHAPE_LIST, SHAPE_TUPLE_ELLIPSIS, SHAPE_SEQUENCE, SHAPE_SET, SHAPE_FROZENSET, \
-    SHAPE_ITERABLE, SHAPE_DEQUE
+from pydantic import BaseModel, Field, ConfigDict
+from pydantic.fields import FieldInfo
 
 from sharepoint import sp_fields
 
-PYDANTIC_ITERABLE = {SHAPE_LIST, SHAPE_TUPLE_ELLIPSIS, SHAPE_SEQUENCE, SHAPE_SET, SHAPE_FROZENSET, SHAPE_ITERABLE,
-                     SHAPE_DEQUE}
+ITERABLE_ORIGINS = (list, set, tuple, frozenset, deque, Sequence)
 
 
 class Node(BaseModel):
-    name: str = None
-    field: ModelField = None
+    name: str | None = None
+    field: FieldInfo | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
-    fields: dict[str, ModelField] = Field(default_factory=dict)
+    fields: dict[str, FieldInfo] = Field(default_factory=dict)
     type: Type
     path: list["Node"] = Field(default_factory=list, repr=False)
     is_array: bool = False
@@ -30,25 +29,37 @@ class Node(BaseModel):
         if path is not None:
             self.path = path + [self]
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 def traverse_fields(model: Type[BaseModel]):
     queue: Queue[Node] = Queue()
-    root_node = Node(fields=model.__fields__, type=model)
+    root_node = Node(fields=model.model_fields, type=model)
     queue.put(root_node)
     end_nodes = []
     while not queue.empty():
         node = queue.get()
         path = node.path
-        for name, field in node.fields.items():
-            is_array = field.shape in PYDANTIC_ITERABLE
-            type_ = field.type_
-            is_pydantic = issubclass(type_, BaseModel)
-            fields = type_.__fields__ if is_pydantic else {}
-            sub_node = Node(name=name, fields=fields, type=type_, path=path, is_array=is_array, field=field,
-                            extra=field.field_info.extra)
+        for name, field_info in node.fields.items():
+            annotation = field_info.annotation
+            # Detect if the field is an iterable container (list, set, etc.)
+            origin = get_origin(annotation)
+            is_array = origin is not None and origin in ITERABLE_ORIGINS
+            # Get the inner type for iterables, or the annotation itself
+            if is_array:
+                args = get_args(annotation)
+                type_ = args[0] if args else annotation
+            else:
+                type_ = annotation
+
+            is_pydantic = isinstance(type_, type) and issubclass(type_, BaseModel)
+            fields = type_.model_fields if is_pydantic else {}
+            # Extract extra metadata from json_schema_extra
+            extra = field_info.json_schema_extra if isinstance(field_info.json_schema_extra, dict) else {}
+            sub_node = Node(
+                name=name, fields=fields, type=type_, path=path,
+                is_array=is_array, field=field_info, extra=extra,
+            )
             if is_pydantic:
                 queue.put(sub_node)
             else:
@@ -62,8 +73,8 @@ class SharePointColumn:
     def __init__(self, node: Node):
         self.title = self.reduce_title(node)
         self.type = node.type
-        self.required = node.field.required
-        self.field_info = node.field.field_info
+        self.required = node.field.is_required()
+        self.field_info = node.field
         self.extra = node.extra
 
     @staticmethod
@@ -72,14 +83,16 @@ class SharePointColumn:
         return title
 
     def payload(self):
-        try:
-            field = self.extra.pop("sp_field")
-        except KeyError:
-            self.extra["field_type_kind"] = SHAREPOINT_TYPES[self.type]
+        extra = dict(self.extra)
+        field = extra.pop("sp_field", None)
+        if field is None:
+            extra["field_type_kind"] = SHAREPOINT_TYPES[self.type]
             field = sp_fields.Field
-        data = dict(self.field_info.__repr_args__())
-        data.pop("extra")  # Eliminar elemento default de __repr_args__
-        data.update(self.extra)
+        # Extract relevant field metadata for the payload
+        data = {}
+        if self.field_info.description is not None:
+            data["description"] = self.field_info.description
+        data.update(extra)
         field_instance = field(**data, title=self.title)  # , required=self.required)
         payload = field_instance.payload()
         return payload

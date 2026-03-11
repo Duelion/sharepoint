@@ -1,4 +1,4 @@
-from pydantic.v1 import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from .utils import to_camel, replace_key_mapping, COLUMN_ESCAPE
 
@@ -8,15 +8,16 @@ class Field(BaseModel):
     field_type_kind: int
     required: bool = True
     type: str = "SP.Field"
-    description: str = None
+    description: str | None = None
 
-    class Config:
-        alias_generator = to_camel
-        arbitrary_types_allowed = True
-        allow_population_by_field_name = True
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        arbitrary_types_allowed=True,
+        populate_by_name=True,
+    )
 
     def data(self):
-        data = self.dict(by_alias=True, exclude={"type"}, exclude_none=True)
+        data = self.model_dump(by_alias=True, exclude={"type"}, exclude_none=True)
         data = replace_key_mapping(data, COLUMN_ESCAPE)
         return data
 
